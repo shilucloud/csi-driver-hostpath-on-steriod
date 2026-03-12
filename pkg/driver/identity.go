@@ -1,26 +1,51 @@
 package driver
 
 import (
-	"fmt"
+	"context"
 
-	"github.com/container-storage-interface/spec/lib/go/csi"
+	csi "github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-type IdentityService struct {
+func (d *Driver) GetPluginInfo(ctx context.Context, req *csi.GetPluginInfoRequest) (*csi.GetPluginInfoResponse, error) {
+	resp := &csi.GetPluginInfoResponse{
+		Name:          d.driverName,
+		VendorVersion: d.driverVersion,
+	}
+
+	return resp, nil
 }
 
-func (is *IdentityService) GetPluginCapabilities(*csi.GetPluginCapabilitiesRequest) *csi.GetPluginCapabilitiesResponse {
-	fmt.Print("This is plugin cap")
+func (d *Driver) GetPluginCapabilities(ctx context.Context, req *csi.GetPluginCapabilitiesRequest) (*csi.GetPluginCapabilitiesResponse, error) {
+	resp := &csi.GetPluginCapabilitiesResponse{
+		Capabilities: []*csi.PluginCapability{
+			{
+				Type: &csi.PluginCapability_Service_{
+					Service: &csi.PluginCapability_Service{
+						Type: csi.PluginCapability_Service_CONTROLLER_SERVICE,
+					},
+				},
+			},
+			{
+				Type: &csi.PluginCapability_Service_{
+					Service: &csi.PluginCapability_Service{
+						Type: csi.PluginCapability_Service_VOLUME_ACCESSIBILITY_CONSTRAINTS,
+					},
+				},
+			},
+		},
+	}
 
-	return nil
+	return resp, nil
 }
 
-func (is *IdentityService) GetPluginInfo(*csi.GetPluginInfoRequest) *csi.GetPluginInfoResponse {
-	fmt.Print("this is plugin info")
-	return nil
-}
+func (d *Driver) Probe(ctx context.Context, req *csi.ProbeRequest) (*csi.ProbeResponse, error) {
+	// Controller Service will make dry-run EC2 call to ensure proper auth/networking
+	if !d.healthy {
 
-func (is *IdentityService) Probe(*csi.ProbeRequest) *csi.ProbeResponse {
-	fmt.Print("this is probe")
-	return nil
+		return &csi.ProbeResponse{}, status.Errorf(codes.FailedPrecondition, "Failed health check")
+	}
+
+	return &csi.ProbeResponse{}, nil
 }
