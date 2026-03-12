@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csi-driver-hostpath-on-steriods-deploy
+  namespace: testing
+spec:
+  selector:
+    matchLabels:
+      app: csi-driver-hostpath-on-steriod
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: csi-driver-hostpath-on-steriod
+      name: csi-driver
+    spec:
+      containers:
+        - name: csi-driver
+          image: shilucloud/csi-driver-hostpath-on-steriod:v0.0.1
+          args:
+            - "--endpoint=unix///tmp/run/csi.sock"
+            - "--name=csi.driver.hostpath.on.steriod"
+        - name: external-provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v6.2.0
+          args:
+            - "--csi-address=/tmp/run/csi.sock"
+            - "--v=5"
+
