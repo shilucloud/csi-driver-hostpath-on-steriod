@@ -38,14 +38,42 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
           volumeMounts:
+            - name: dev
+              mountPath: /dev
+
             - name: socket-dir
               mountPath: /var/run/
+            
+            - name: hpos-data
+              mountPath: /var/lib/hpos
+
+            - name: staging-dir
+              mountPath: /var/lib/kubelet
+              mountPropagation: "Bidirectional"
+          
+          securityContext:
+            privileged: true
               
       volumes:
+        - name: dev
+          hostPath:
+            path: /dev
+            
+        - name: hpos-data
+          hostPath:
+            path: /var/lib/hpos
+            type: DirectoryOrCreate
+        
+        - name: staging-dir 
+          hostPath:
+            path: /var/lib/kubelet 
+            type: DirectoryOrCreate
+
         - name: registration-dir
           hostPath:
             path: /var/lib/kubelet/plugins_registry/
             type: Directory
+
         - name: socket-dir
           hostPath:
             path: /var/lib/kubelet/plugins/csi.driver.hostpath.on.steriod//

@@ -180,6 +180,7 @@ func (cs *ControllerService) ControllerPublishVolume(ctx context.Context, req *c
 	}
 
 	vol.Status.Phase = "attached"
+	vol.Status.AttachedNode = req.NodeId
 	if err := cs.goClient.Status().Update(ctx, vol); err != nil {
 		klog.ErrorS(err, "Failed to update volume status to attached", "volID", req.VolumeId)
 		return nil, status.Errorf(codes.Internal, "failed to update status: %v", err)

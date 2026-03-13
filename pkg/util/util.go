@@ -1,10 +1,14 @@
 package util
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -43,4 +47,88 @@ func GetHostName() string {
 
 func GetNumberOfVolumesPerNode() int64 {
 	return 25
+}
+
+func CreateImageFile(path string, byteSize int64) error {
+	if fileExists(path) {
+		return nil
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("error creating image file %s: %w", path, err)
+	}
+	f.Close()
+
+	if err := os.Truncate(path, byteSize); err != nil {
+		return fmt.Errorf("error sizing image file %s: %w", path, err)
+	}
+	return nil
+}
+
+func AttachLoopDevice(imgPath string) (string, error) {
+	// check if already attached
+	out, err := exec.Command("losetup", "-j", imgPath).Output()
+	if err == nil && len(out) > 0 {
+		loopDev := strings.SplitN(string(out), ":", 2)[0]
+		return strings.TrimSpace(loopDev), nil
+	}
+
+	// get next free loop device number
+	out, err = exec.Command("losetup", "-f").Output()
+	if err != nil {
+		return "", fmt.Errorf("losetup -f failed: %w", err)
+	}
+	loopDev := strings.TrimSpace(string(out))
+
+	// create the device node if it doesn't exist
+	exec.Command("mknod", loopDev, "b", "7", loopDevMinor(loopDev)).Run()
+
+	// attach
+	cmd := exec.Command("losetup", loopDev, imgPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("losetup %s %s failed: %w — %s", loopDev, imgPath, err, stderr.String())
+	}
+
+	return loopDev, nil
+}
+
+func loopDevMinor(loopDev string) string {
+	// extract number from /dev/loopN
+	n := strings.TrimPrefix(loopDev, "/dev/loop")
+	return n
+}
+
+func MakeFs(devicePath, fsType string) error {
+	cmd := exec.Command("mkfs", "-t", fsType, devicePath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("error making filesystem: %w: %s", err, string(out))
+	}
+	return nil
+}
+
+func Mount(source, target, fsType string) error {
+	cmd := exec.Command("mount", "-t", fsType, source, target)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("error mounting %s to %s: %w: %s", source, target, err, string(out))
+	}
+	return nil
+}
+
+func fileExists(filename string) bool {
+	_, err := os.Stat(filename)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	fmt.Printf("Error checking file: %v\n", err)
+	return false
+}
+
+func StrToInt(value string) (int64, error) {
+	return strconv.ParseInt(value, 10, 64)
 }

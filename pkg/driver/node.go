@@ -6,8 +6,10 @@ import (
 	"os"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/shilucloud/csi-driver-hostpath-on-steriod/pkg/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"k8s.io/klog/v2"
 )
 
 var (
@@ -22,7 +24,62 @@ type NodeService struct {
 }
 
 func (ns *NodeService) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
-	fmt.Print("this is nodestage vol")
+	klog.InfoS("Received NodeStageVolume request", "volID", req.VolumeId, "stagingPath", req.StagingTargetPath)
+
+	if req.VolumeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume ID must be provided")
+	}
+	if req.StagingTargetPath == "" {
+		return nil, status.Error(codes.InvalidArgument, "staging target path must be provided")
+	}
+	if req.PublishContext["imgPath"] == "" {
+		return nil, status.Error(codes.InvalidArgument, "imgPath must be provided in publish context")
+	}
+	if req.VolumeContext["fsType"] == "" {
+		return nil, status.Error(codes.InvalidArgument, "fsType must be provided in volume context")
+	}
+	if req.VolumeContext["byteSize"] == "" {
+		return nil, status.Error(codes.InvalidArgument, "byteSize must be provided in volume context")
+	}
+
+	byteSize, err := util.StrToInt(req.VolumeContext["byteSize"])
+	if err != nil {
+		klog.ErrorS(err, "failed to parse byteSize", "byteSize", req.VolumeContext["byteSize"])
+		return nil, status.Errorf(codes.Internal, "failed to parse byteSize: %v", err)
+	}
+
+	imgPath := req.PublishContext["imgPath"]
+	fsType := req.VolumeContext["fsType"]
+	stagingPath := req.StagingTargetPath
+
+	// 1. Create the image file
+	if err := util.CreateImageFile(imgPath, byteSize); err != nil {
+		klog.ErrorS(err, "failed to create image file", "imgPath", imgPath)
+		return nil, status.Errorf(codes.Internal, "failed to create image file: %v", err)
+	}
+	klog.InfoS("Image file ready", "imgPath", imgPath)
+
+	// 2. Attach loop device
+	devicePath, err := util.AttachLoopDevice(imgPath)
+	if err != nil {
+		klog.ErrorS(err, "failed to attach loop device", "imgPath", imgPath)
+		return nil, status.Errorf(codes.Internal, "failed to attach loop device: %v", err)
+	}
+	klog.InfoS("Loop device attached", "devicePath", devicePath)
+
+	// 3. Format filesystem
+	if err := util.MakeFs(devicePath, fsType); err != nil {
+		klog.ErrorS(err, "failed to make filesystem", "devicePath", devicePath, "fsType", fsType)
+		return nil, status.Errorf(codes.Internal, "failed to make filesystem: %v", err)
+	}
+	klog.InfoS("Filesystem created", "devicePath", devicePath, "fsType", fsType)
+
+	// 4. Mount to staging path
+	if err := util.Mount(devicePath, stagingPath, fsType); err != nil {
+		klog.ErrorS(err, "failed to mount to staging path", "devicePath", devicePath, "stagingPath", stagingPath)
+		return nil, status.Errorf(codes.Internal, "failed to mount: %v", err)
+	}
+	klog.InfoS("Mounted to staging path", "devicePath", devicePath, "stagingPath", stagingPath)
 
 	return &csi.NodeStageVolumeResponse{}, nil
 }
