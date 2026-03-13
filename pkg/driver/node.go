@@ -2,7 +2,6 @@ package driver
 
 import (
 	"context"
-	"fmt"
 	"os"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -85,19 +84,47 @@ func (ns *NodeService) NodeStageVolume(ctx context.Context, req *csi.NodeStageVo
 }
 
 func (ns *NodeService) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
-	fmt.Print("this is nodeUnstage vol")
+	klog.InfoS("Received NodeUnstageVolume request", "volID", req.VolumeId, "stagingPath", req.StagingTargetPath)
+
+	// 1. detach loop device first (while still mounted so findmnt can find it)
+	if err := util.DetachLoopDevice(req.StagingTargetPath); err != nil {
+		klog.ErrorS(err, "failed to detach loop device", "stagingPath", req.StagingTargetPath)
+		// non-fatal, continue
+	}
+	klog.InfoS("Loop device detached", "stagingPath", req.StagingTargetPath)
+
+	// 2. then unmount
+	if err := util.UnmountOnly(req.StagingTargetPath); err != nil {
+		klog.ErrorS(err, "failed to unmount staging path", "stagingPath", req.StagingTargetPath)
+		return nil, status.Errorf(codes.Internal, "failed to unmount: %v", err)
+	}
+	klog.InfoS("NodeUnstageVolume complete", "volID", req.VolumeId)
 
 	return &csi.NodeUnstageVolumeResponse{}, nil
 }
 
 func (ns *NodeService) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
-	fmt.Print("this iss nodepubvol")
+	klog.InfoS("Received NodePublishVolume request", "volID", req.VolumeId, "stagingPath", req.TargetPath)
+
+	err := util.BindMount(req.StagingTargetPath, req.TargetPath)
+	if err != nil {
+		klog.ErrorS(err, "failed to mount to target path", "stagingPath", req.StagingTargetPath, "targetPath", req.TargetPath)
+		return nil, status.Errorf(codes.Internal, "failed to mount: %v", err)
+	}
+
+	klog.InfoS("Mounted to Target path", "stagingPath", req.StagingTargetPath, "targetPath", req.TargetPath)
 
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 
 func (ns *NodeService) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
-	fmt.Print("this iss nodeunpubvol")
+	klog.InfoS("Received NodeUnpublishVolume request", "volID", req.VolumeId, "TargetPath", req.TargetPath)
+	err := util.Unmount(req.TargetPath)
+	if err != nil {
+		klog.ErrorS(err, "failed to unmount target path", "targetPath", req.TargetPath)
+		return nil, status.Errorf(codes.Internal, "failed to unmount: %v", err)
+	}
+	klog.InfoS("Unmounted from Target path", "targetPath", req.TargetPath)
 
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }

@@ -95,6 +95,31 @@ func AttachLoopDevice(imgPath string) (string, error) {
 	return loopDev, nil
 }
 
+func DetachLoopDevice(stagingPath string) error {
+	// find which loop device is mounted at staging path
+	out, err := exec.Command("findmnt", "-n", "-o", "SOURCE", stagingPath).Output()
+	if err != nil {
+		return fmt.Errorf("findmnt %s: %w", stagingPath, err)
+	}
+
+	loopDev := strings.TrimSpace(string(out))
+	if loopDev == "" {
+		return fmt.Errorf("no device found at %s", stagingPath)
+	}
+	if !strings.HasPrefix(loopDev, "/dev/loop") {
+		return nil // not a loop device, skip
+	}
+
+	cmd := exec.Command("losetup", "-d", loopDev)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("losetup -d %s failed: %w — %s", loopDev, err, stderr.String())
+	}
+
+	return nil
+}
+
 func loopDevMinor(loopDev string) string {
 	// extract number from /dev/loopN
 	n := strings.TrimPrefix(loopDev, "/dev/loop")
@@ -102,7 +127,13 @@ func loopDevMinor(loopDev string) string {
 }
 
 func MakeFs(devicePath, fsType string) error {
-	cmd := exec.Command("mkfs", "-t", fsType, devicePath)
+	// check if already has a filesystem — idempotency
+	out, _ := exec.Command("blkid", "-o", "value", "-s", "TYPE", devicePath).Output()
+	if strings.TrimSpace(string(out)) != "" {
+		return nil
+	}
+
+	cmd := exec.Command("mkfs."+fsType, devicePath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("error making filesystem: %w: %s", err, string(out))
 	}
@@ -113,6 +144,39 @@ func Mount(source, target, fsType string) error {
 	cmd := exec.Command("mount", "-t", fsType, source, target)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("error mounting %s to %s: %w: %s", source, target, err, string(out))
+	}
+	return nil
+}
+
+func BindMount(source, target string) error {
+	if err := os.MkdirAll(target, 0750); err != nil {
+		return fmt.Errorf("failed to create target dir %s: %w", target, err)
+	}
+
+	cmd := exec.Command("mount", "--bind", source, target)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("error mounting %s to %s: %w: %s", source, target, err, string(out))
+	}
+	return nil
+}
+
+// used in NodeUnpublishVolume — unmount AND remove dir
+func Unmount(target string) error {
+	cmd := exec.Command("umount", target)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("error unmounting %s: %w: %s", target, err, string(out))
+	}
+	if err := os.RemoveAll(target); err != nil {
+		return fmt.Errorf("failed to remove target dir %s: %w", target, err)
+	}
+	return nil
+}
+
+// used in NodeUnstageVolume — unmount only, don't remove dir
+func UnmountOnly(target string) error {
+	cmd := exec.Command("umount", target)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("error unmounting %s: %w: %s", target, err, string(out))
 	}
 	return nil
 }
