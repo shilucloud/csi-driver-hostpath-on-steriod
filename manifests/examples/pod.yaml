@@ -2,7 +2,9 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: hposvolume-pod
-    #  namespace: testing
+  labels:
+    app: csi-driver-hostpath-on-steriod
+    csi-driver-example: "true"
 spec:
   containers:
     - name: con1

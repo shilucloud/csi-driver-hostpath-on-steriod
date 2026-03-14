@@ -2,6 +2,9 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: demo
+  labels:
+    app: csi-driver-hostpath-on-steriod
+    csi-driver-example: "true"
 spec:
   storageClassName: hostpath-on-steriod
   resources:

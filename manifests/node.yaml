@@ -6,12 +6,14 @@ metadata:
 spec:
   selector:
     matchLabels:
-      csi-driver: node
+      app: csi-driver-hostpath-on-steriod
+      csi-driver-component: node
   template:
     metadata:
       name: csi-node-driver-pod
       labels:
-        csi-driver: node
+        app: csi-driver-hostpath-on-steriod
+        csi-driver-component: node
     spec:
       containers:
         - name: node-driver-registrar

@@ -5,7 +5,6 @@ NAMESPACE="testing"
 IMAGE="shilucloud/csi-driver-hostpath-on-steriod:local"
 DRIVER_NAME="csi.driver.hostpath.on.steriod"
 
-# colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -15,16 +14,31 @@ pass() { echo -e "${GREEN}✅ $1${NC}"; }
 fail() { echo -e "${RED}❌ $1${NC}"; exit 1; }
 info() { echo -e "${YELLOW}➜ $1${NC}"; }
 
+# ─────────────────────────────────────────
+# STEP 1: BUILD AND LOAD IMAGE
+# ─────────────────────────────────────────
+info "Building and loading image..."
+docker build -t $IMAGE .
+kind load docker-image $IMAGE --name kind
+pass "Image built and loaded"
 
 # ─────────────────────────────────────────
-# STEP 1: CLEANUP OLD RESOURCES
+# STEP 2: CLEANUP OLD RESOURCES
 # ─────────────────────────────────────────
 info "Cleaning up old resources..."
-kubectl delete -f manifests/examples --ignore-not-found -n $NAMESPACE
+kubectl delete -f manifests/examples/pod.yaml --ignore-not-found
+kubectl delete -f manifests/examples/pvc.yaml --ignore-not-found
+kubectl delete -f manifests/controller.yaml --ignore-not-found
+kubectl delete -f manifests/node.yaml --ignore-not-found
+kubectl delete -f manifests/storageclass.yaml --ignore-not-found
+kubectl delete -f manifests/csidriver.yaml --ignore-not-found
+kubectl delete -f manifests/clusterrolebinding.yaml --ignore-not-found
+kubectl delete -f manifests/clusterrole.yaml --ignore-not-found
+kubectl delete -f manifests/serviceaccount.yaml --ignore-not-found
+kubectl delete -f manifests/crds/hpos-crd.yaml --ignore-not-found
+kubectl delete hpvol --all --ignore-not-found
+kubectl delete volumeattachment --all --ignore-not-found 2>/dev/null || true
 
-kubectl delete -f manifests/ --ignore-not-found -n $NAMESPACE
-
-# wait for old pods to terminate
 info "Waiting for old pods to terminate..."
 kubectl wait --for=delete pod \
   -l app=csi-driver-hostpath-on-steriod \
@@ -38,7 +52,14 @@ pass "Old resources cleaned up"
 # STEP 3: APPLY MANIFESTS
 # ─────────────────────────────────────────
 info "Applying manifests..."
-kubectl apply -f manifests/ -n $NAMESPACE
+kubectl apply -f manifests/crds/hpos-crd.yaml
+kubectl apply -f manifests/csidriver.yaml
+kubectl apply -f manifests/serviceaccount.yaml
+kubectl apply -f manifests/clusterrole.yaml
+kubectl apply -f manifests/clusterrolebinding.yaml
+kubectl apply -f manifests/storageclass.yaml
+kubectl apply -f manifests/controller.yaml
+kubectl apply -f manifests/node.yaml
 pass "Manifests applied"
 
 # ─────────────────────────────────────────
@@ -70,7 +91,6 @@ kubectl wait --for=jsonpath='{.status.phase}'=Bound \
   || fail "PVC not Bound"
 pass "PVC is Bound"
 
-# verify HPOSVolume CR created
 info "Checking HPOSVolume CR..."
 kubectl get hpvol || fail "HPOSVolume CR not found"
 pass "HPOSVolume CR exists"
@@ -87,7 +107,6 @@ kubectl wait --for=condition=ready pod/hposvolume-pod \
   || fail "Pod not Running"
 pass "Pod is Running"
 
-# verify VolumeAttachment created and attached
 info "Checking VolumeAttachment..."
 VA=$(kubectl get volumeattachment \
   -o jsonpath='{.items[?(@.spec.attacher=="'$DRIVER_NAME'")].metadata.name}')
@@ -110,21 +129,18 @@ DF_OUTPUT=$(kubectl exec hposvolume-pod \
   || fail "df -h failed inside pod"
 echo "$DF_OUTPUT"
 
-# check /data is actually mounted
 if echo "$DF_OUTPUT" | grep -q "/data"; then
   pass "/data is mounted inside pod"
 else
   fail "/data not found in df -h output"
 fi
 
-# write a test file
 info "Writing test file to /data..."
 kubectl exec hposvolume-pod \
   -- sh -c "echo 'hpos-test' > /data/test.txt" \
   || fail "Failed to write test file"
 pass "Test file written"
 
-# read it back
 DATA=$(kubectl exec hposvolume-pod \
   -- cat /data/test.txt)
 if [ "$DATA" = "hpos-test" ]; then
@@ -145,12 +161,11 @@ kubectl wait --for=delete pod/hposvolume-pod \
   || fail "Pod not deleted"
 pass "Pod deleted"
 
-# check VolumeAttachment is deleted
 info "Waiting for VolumeAttachment to be deleted..."
 kubectl wait --for=delete volumeattachment/$VA \
   --timeout=60s \
   || fail "VolumeAttachment not deleted"
-pass "VolumeAttachment deleted — ControllerUnpublishVolume called ✅"
+pass "VolumeAttachment deleted ✅"
 
 # ─────────────────────────────────────────
 # STEP 9: DELETE PVC AND CHECK CLEANUP
@@ -164,7 +179,6 @@ kubectl wait --for=delete pvc/demo \
   || fail "PVC not deleted"
 pass "PVC deleted"
 
-# check PV deleted
 info "Waiting for PV to be deleted..."
 PV=$(kubectl get pv \
   -o jsonpath='{.items[?(@.spec.storageClassName=="hostpath-on-steriod")].metadata.name}' \
@@ -176,9 +190,8 @@ if [ -n "$PV" ]; then
 fi
 pass "PV deleted"
 
-# check HPOSVolume CR deleted
 info "Checking HPOSVolume CR is deleted..."
-sleep 5  # give DeleteVolume time to run
+sleep 5
 HPVOL=$(kubectl get hpvol 2>/dev/null | grep -v NAME | wc -l)
 if [ "$HPVOL" -eq 0 ]; then
   pass "HPOSVolume CR deleted ✅"
@@ -186,7 +199,6 @@ else
   fail "HPOSVolume CR still exists"
 fi
 
-# check cleanup job ran
 info "Checking cleanup job..."
 kubectl get jobs -n $NAMESPACE 2>/dev/null || true
 

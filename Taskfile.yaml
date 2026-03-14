@@ -22,3 +22,104 @@ tasks:
     desc: "Clean everything"
     cmds:
       - ./scripts/cleanup.sh
+
+  apply:
+    desc: "Apply all manifests"
+    cmds:
+      - kubectl apply -f manifests/crds/hpos-crd.yaml
+      - kubectl apply -f manifests/csidriver.yaml
+      - kubectl apply -f manifests/serviceaccount.yaml
+      - kubectl apply -f manifests/clusterrole.yaml
+      - kubectl apply -f manifests/clusterrolebinding.yaml
+      - kubectl apply -f manifests/storageclass.yaml
+      - kubectl apply -f manifests/controller.yaml
+      - kubectl apply -f manifests/node.yaml
+
+  dev:
+    desc: "Build image and redeploy driver"
+    cmds:
+      - task: docker-build
+      - task: cleanup
+      - task: apply
+  
+  add-example:
+    desc: "Add example resources"
+    cmds:
+      - kubectl apply -f manifests/examples/pvc.yaml
+      - kubectl apply -f manifests/examples/pod.yaml
+  
+  validate-example:
+    desc: "Validate example resources"
+    cmds:
+      - kubectl wait --for=condition=Bound  pvc/demo
+      - kubectl wait --for=condition=Ready  pod/hposvolume-pod
+
+  delete-example:
+    desc: "Delete example resources"
+    cmds:
+      - kubectl delete -f manifests/examples/pod.yaml --ignore-not-found
+      - kubectl delete -f manifests/examples/pvc.yaml --ignore-not-found
+
+  logs-controller:
+    desc: "Tail controller driver logs"
+    cmds:
+      - |
+        kubectl logs -n testing \
+          -l csi-driver-component=controller \
+          -c csi-driver -f
+
+  logs-provisioner:
+    desc: "Tail provisioner logs"
+    cmds:
+      - |
+        kubectl logs -n testing \
+          -l csi-driver-component=controller \
+          -c external-provisioner -f
+
+  logs-attacher:
+    desc: "Tail attacher logs"
+    cmds:
+      - |
+        kubectl logs -n testing \
+          -l csi-driver-component=controller \
+          -c external-attacher -f
+
+  logs-node-registrar:
+    desc: "Tail node driver registrar logs"
+    cmds:
+      - |
+        kubectl logs -n testing \
+          -l csi-driver-component=node \
+          -c node-driver-registrar -f
+
+  logs-node:
+    desc: "Tail node driver logs"
+    cmds:
+      - |
+        kubectl logs -n testing \
+          -l csi-driver-component=node \
+          -c csi-driver -f
+
+  status:
+    desc: "Show all CSI related resources"
+    cmds:
+      - echo "=== PODS ==="
+      - kubectl get pods -n testing
+      - echo "=== PVC ==="
+      - kubectl get pvc
+      - echo "=== PV ==="
+      - kubectl get pv
+      - echo "=== HPOSVOLUME ==="
+      - kubectl get hpvol
+      - echo "=== VOLUMEATTACHMENT ==="
+      - kubectl get volumeattachment
+      - echo "=== CSINODE ==="
+      - kubectl get csinode
+
+  release:
+    desc: "Tag and push a new release"
+    cmds:
+      - git tag v{{.VERSION}}
+      - git push origin v{{.VERSION}}
+    requires:
+      vars: [VERSION]
