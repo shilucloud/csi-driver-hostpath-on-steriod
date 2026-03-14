@@ -34,7 +34,8 @@ var (
 
 type ControllerService struct {
 	csi.UnimplementedControllerServer
-	goClient client.Client
+	goClient  client.Client
+	namespace string
 }
 
 func (cs *ControllerService) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
@@ -151,6 +152,7 @@ func (cs *ControllerService) DeleteVolume(ctx context.Context, req *csi.DeleteVo
 			klog.InfoS("Volume already deleted, idempotent return", "volID", req.VolumeId)
 			return &csi.DeleteVolumeResponse{}, nil
 		}
+		klog.ErrorS(err, "Failed to get volume", "volID", req.VolumeId)
 		return nil, status.Errorf(codes.Internal, "failed to delete volume, internal error: %v", err)
 	}
 
@@ -158,11 +160,13 @@ func (cs *ControllerService) DeleteVolume(ctx context.Context, req *csi.DeleteVo
 	imgPath := fmt.Sprintf("/var/lib/hpos/%s.img", req.VolumeId)
 	jobName := "cleanup-" + req.VolumeId[:16] // truncate for k8s name limit
 
+	klog.InfoS("Creating cleanup job to delete image file on node", "node", nodeName, "imgPath", imgPath)
+
 	// create cleanup job on the target node
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
-			Namespace: "testing",
+			Namespace: cs.namespace,
 		},
 		Spec: batchv1.JobSpec{
 			TTLSecondsAfterFinished: util.Int32Ptr(60),
@@ -195,12 +199,14 @@ func (cs *ControllerService) DeleteVolume(ctx context.Context, req *csi.DeleteVo
 	}
 
 	if err := cs.goClient.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
+		klog.ErrorS(fmt.Errorf("failed to create cleanup job"), "Failed to create cleanup job", "job", jobName, "node", nodeName, "imgPath", imgPath, "error", err)
 		return nil, status.Errorf(codes.Internal, "failed to create cleanup job: %v", err)
 	}
 	klog.InfoS("Cleanup job created", "job", jobName, "node", nodeName, "imgPath", imgPath)
 
 	// delete the CR
 	if err := cs.goClient.Delete(ctx, vol); err != nil {
+		klog.ErrorS(err, "Failed to delete volume CR", "volID", req.VolumeId)
 		return nil, status.Errorf(codes.Internal, "failed to delete volume CR: %v", err)
 	}
 
@@ -221,39 +227,44 @@ func (cs *ControllerService) ControllerPublishVolume(ctx context.Context, req *c
 	vol := &hposv1.HPOSVolume{}
 	if err := cs.goClient.Get(ctx, client.ObjectKey{Name: req.VolumeId}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
-			klog.ErrorS(err, "Volume not found", "volID", req.VolumeId)
 			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.VolumeId)
 		}
-		klog.ErrorS(err, "Failed to get volume", "volID", req.VolumeId)
 		return nil, status.Errorf(codes.Internal, "failed to get volume: %v", err)
 	}
 
 	klog.InfoS("Found volume CR", "volID", req.VolumeId, "specNode", vol.Spec.NodeName, "phase", vol.Status.Phase)
 
-	if vol.Spec.NodeName != req.NodeId {
-		klog.ErrorS(nil, "Node mismatch", "volID", req.VolumeId, "specNode", vol.Spec.NodeName, "requestedNode", req.NodeId)
-		return nil, status.Errorf(codes.InvalidArgument,
-			"volume %s belongs to node %s, not %s",
-			req.VolumeId, vol.Spec.NodeName, req.NodeId)
-	}
-
 	imgPath := fmt.Sprintf("/var/lib/hpos/%s.img", req.VolumeId)
 
-	if vol.Status.Phase == "attached" {
-		klog.InfoS("Volume already attached, returning idempotent response", "volID", req.VolumeId, "imgPath", imgPath)
+	// idempotency — already attached to this node
+	if vol.Status.Phase == "attached" && vol.Status.AttachedNode == req.NodeId {
+		klog.InfoS("Volume already attached to requested node, idempotent return", "volID", req.VolumeId)
 		return &csi.ControllerPublishVolumeResponse{
 			PublishContext: map[string]string{"imgPath": imgPath},
 		}, nil
 	}
 
+	// attached to a DIFFERENT node — error
+	if vol.Status.Phase == "attached" && vol.Status.AttachedNode != req.NodeId {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"volume %s already attached to node %s",
+			req.VolumeId, vol.Status.AttachedNode)
+	}
+
+	// node mismatch — volume belongs to different node
+	if vol.Spec.NodeName != req.NodeId {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"volume %s belongs to node %s, not %s",
+			req.VolumeId, vol.Spec.NodeName, req.NodeId)
+	}
+
 	vol.Status.Phase = "attached"
 	vol.Status.AttachedNode = req.NodeId
 	if err := cs.goClient.Status().Update(ctx, vol); err != nil {
-		klog.ErrorS(err, "Failed to update volume status to attached", "volID", req.VolumeId)
 		return nil, status.Errorf(codes.Internal, "failed to update status: %v", err)
 	}
 
-	klog.InfoS("Volume attached successfully", "volID", req.VolumeId, "node", req.NodeId, "imgPath", imgPath)
+	klog.InfoS("Volume attached successfully", "volID", req.VolumeId, "node", req.NodeId)
 	return &csi.ControllerPublishVolumeResponse{
 		PublishContext: map[string]string{"imgPath": imgPath},
 	}, nil
@@ -265,8 +276,9 @@ func (cs *ControllerService) ControllerUnpublishVolume(ctx context.Context, req 
 	vol := &hposv1.HPOSVolume{}
 	if err := cs.goClient.Get(ctx, client.ObjectKey{Name: req.VolumeId}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
-			klog.ErrorS(err, "Volume not found", "volID", req.VolumeId)
-			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.VolumeId)
+			klog.InfoS("Volume not found, idempotent return",
+				"volID", req.VolumeId)
+			return &csi.ControllerUnpublishVolumeResponse{}, nil
 		}
 		klog.ErrorS(err, "Failed to get volume", "volID", req.VolumeId)
 		return nil, status.Errorf(codes.Internal, "failed to get volume: %v", err)
@@ -295,14 +307,32 @@ func (cs *ControllerService) ControllerGetVolume(ctx context.Context, req *csi.C
 func (cs *ControllerService) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
 	volumeList := &hposv1.HPOSVolumeList{}
 	if err := cs.goClient.List(ctx, volumeList); err != nil {
-		return nil, fmt.Errorf("failed to list volumes: %v", err)
+		return nil, status.Errorf(codes.Internal,
+			"failed to list volumes: %v", err)
 	}
 
-	volumes := make([]*csi.ListVolumesResponse_Entry, 0, len(volumeList.Items))
-	for _, vol := range volumeList.Items {
+	// basic pagination support
+	items := volumeList.Items
+	if req.MaxEntries > 0 && int(req.MaxEntries) < len(items) {
+		items = items[:req.MaxEntries]
+	}
+
+	volumes := make([]*csi.ListVolumesResponse_Entry, 0, len(items))
+	for _, vol := range items {
+		byteSize, _ := strconv.ParseInt(vol.Spec.ByteSize, 10, 64)
+
+		var publishedNodes []string
+		if vol.Status.AttachedNode != "" {
+			publishedNodes = []string{vol.Status.AttachedNode}
+		}
+
 		volumes = append(volumes, &csi.ListVolumesResponse_Entry{
 			Volume: &csi.Volume{
-				VolumeId: vol.Name,
+				VolumeId:      vol.Spec.VolID,
+				CapacityBytes: byteSize,
+			},
+			Status: &csi.ListVolumesResponse_VolumeStatus{
+				PublishedNodeIds: publishedNodes,
 			},
 		})
 	}
@@ -357,6 +387,6 @@ func (cs *ControllerService) GetSnapshot(ctx context.Context, req *csi.GetSnapsh
 	return nil, fmt.Errorf("GetSnapshot not implemented")
 }
 
-func NewControllerService(goClient client.Client) *ControllerService {
-	return &ControllerService{goClient: goClient}
+func NewControllerService(goClient client.Client, namespace string) *ControllerService {
+	return &ControllerService{goClient: goClient, namespace: namespace}
 }

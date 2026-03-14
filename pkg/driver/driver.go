@@ -28,6 +28,7 @@ type Options struct {
 	Endpoint      string
 	Name          string
 	driverVersion string
+	PodNamespace  string
 }
 
 func NewDriver(options *Options) (*Driver, error) {
@@ -45,11 +46,11 @@ func NewDriver(options *Options) (*Driver, error) {
 
 	switch options.Mode {
 	case ControllerMode:
-		driver.controller = NewControllerService(goClient)
+		driver.controller = NewControllerService(goClient, options.PodNamespace)
 	case NodeMode:
 		driver.node = NewNodeService()
 	case AllMode:
-		driver.controller = NewControllerService(goClient)
+		driver.controller = NewControllerService(goClient, options.PodNamespace)
 		driver.node = NewNodeService()
 	default:
 		klog.ErrorS(fmt.Errorf("Unknown mode"), "unknown mode provided", "mode", options.Mode)

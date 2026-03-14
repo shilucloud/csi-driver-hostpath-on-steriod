@@ -16,11 +16,13 @@ func main() {
 		name     = flag.String("name", "csi.driver.hostpath.on.steriod", "Name of the CSI Driver")
 	)
 	flag.Parse()
+	podNamespace := os.Getenv("POD_NAMESPACE")
 
 	d, err := driver.NewDriver(&driver.Options{
-		Mode:     driver.Mode(*mode),
-		Endpoint: *endpoint,
-		Name:     *name,
+		Mode:         driver.Mode(*mode),
+		Endpoint:     *endpoint,
+		Name:         *name,
+		PodNamespace: podNamespace,
 	})
 
 	if err != nil {
