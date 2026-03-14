@@ -41,6 +41,12 @@ func (ns *NodeService) NodeStageVolume(ctx context.Context, req *csi.NodeStageVo
 		return nil, status.Error(codes.InvalidArgument, "byteSize must be provided in volume context")
 	}
 
+	// checking if accessMode is block
+	if _, ok := req.VolumeCapability.AccessType.(*csi.VolumeCapability_Block); ok {
+		return nil, status.Error(codes.InvalidArgument,
+			"block mode not supported by this driver")
+	}
+
 	byteSize, err := util.StrToInt(req.VolumeContext["byteSize"])
 	if err != nil {
 		klog.ErrorS(err, "failed to parse byteSize", "byteSize", req.VolumeContext["byteSize"])
