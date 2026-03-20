@@ -92,6 +92,34 @@ func (ns *NodeService) NodeStageVolume(ctx context.Context, req *csi.NodeStageVo
 func (ns *NodeService) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
 	klog.InfoS("Received NodeUnstageVolume request", "volID", req.VolumeId, "stagingPath", req.StagingTargetPath)
 
+	if req.VolumeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume ID must be provided")
+	}
+
+	if req.StagingTargetPath == "" {
+		return nil, status.Error(codes.InvalidArgument, "staging target path must be provided")
+	}
+
+	// Check for Idempotency: if staging path is not mounted, consider it successful
+	isAttached, err := util.IsAttachedLoopDevice(req.StagingTargetPath)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check if staging path is attached to a loop device: %v", err)
+	}
+	if !isAttached {
+		klog.InfoS("Staging path is not associated with a loop device, treating as success", "stagingPath", req.StagingTargetPath)
+		return &csi.NodeUnstageVolumeResponse{}, nil
+	}
+
+	isMounted, err := util.IsMounted(req.StagingTargetPath)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check if staging path is mounted: %v", err)
+	}
+
+	if !isMounted {
+		klog.InfoS("Staging path is not mounted, treating as success", "stagingPath", req.StagingTargetPath)
+		return &csi.NodeUnstageVolumeResponse{}, nil
+	}
+
 	// 1. detach loop device first (while still mounted so findmnt can find it)
 	if err := util.DetachLoopDevice(req.StagingTargetPath); err != nil {
 		klog.ErrorS(err, "failed to detach loop device", "stagingPath", req.StagingTargetPath)
@@ -110,22 +138,58 @@ func (ns *NodeService) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnsta
 }
 
 func (ns *NodeService) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
-	klog.InfoS("Received NodePublishVolume request", "volID", req.VolumeId, "stagingPath", req.TargetPath)
+	klog.InfoS("Received NodePublishVolume request", "volID", req.VolumeId, "targetPath", req.TargetPath, "stagingPath", req.StagingTargetPath)
 
-	err := util.BindMount(req.StagingTargetPath, req.TargetPath)
+	if req.VolumeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume ID must be provided")
+	}
+
+	if req.TargetPath == "" {
+		return nil, status.Error(codes.InvalidArgument, "target path must be provided")
+	}
+
+	isMounted, err := util.IsMounted(req.TargetPath)
+	if err != nil {
+		klog.ErrorS(err, "failed to check if target path is mounted", "targetPath", req.TargetPath)
+		return nil, status.Errorf(codes.Internal, "failed to check if target path is mounted: %v", err)
+	}
+	if isMounted {
+		klog.InfoS("Target path is already mounted, treating as success", "targetPath", req.TargetPath)
+		return &csi.NodePublishVolumeResponse{}, nil
+	}
+
+	err = util.BindMount(req.StagingTargetPath, req.TargetPath)
 	if err != nil {
 		klog.ErrorS(err, "failed to mount to target path", "stagingPath", req.StagingTargetPath, "targetPath", req.TargetPath)
 		return nil, status.Errorf(codes.Internal, "failed to mount: %v", err)
 	}
 
-	klog.InfoS("Mounted to Target path", "stagingPath", req.StagingTargetPath, "targetPath", req.TargetPath)
-
+	klog.InfoS("Mounted to target path", "stagingPath", req.StagingTargetPath, "targetPath", req.TargetPath)
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 
 func (ns *NodeService) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
 	klog.InfoS("Received NodeUnpublishVolume request", "volID", req.VolumeId, "TargetPath", req.TargetPath)
-	err := util.Unmount(req.TargetPath)
+
+	if req.VolumeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume ID must be provided")
+	}
+
+	if req.TargetPath == "" {
+		return nil, status.Error(codes.InvalidArgument, "target path must be provided")
+	}
+
+	// Check for Idempotency: if target path is not mounted, consider it successful
+	isMounted, err := util.IsMounted(req.TargetPath)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check if target path is mounted: %v", err)
+	}
+	if !isMounted {
+		klog.InfoS("Target path is not mounted, treating as success", "targetPath", req.TargetPath)
+		return &csi.NodeUnpublishVolumeResponse{}, nil
+	}
+
+	err = util.Unmount(req.TargetPath)
 	if err != nil {
 		klog.ErrorS(err, "failed to unmount target path", "targetPath", req.TargetPath)
 		return nil, status.Errorf(codes.Internal, "failed to unmount: %v", err)

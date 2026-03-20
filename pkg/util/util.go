@@ -227,3 +227,30 @@ func WaitForJobCompletion(ctx context.Context, goClient client.Client, namespace
 		time.Sleep(2 * time.Second) // Wait before polling again
 	}
 }
+
+func IsAttachedLoopDevice(stagingPath string) (bool, error) {
+	out, err := exec.Command("findmnt", "-n", "-o", "SOURCE", stagingPath).Output()
+	if err != nil {
+		return false, fmt.Errorf("findmnt %s: %w", stagingPath, err)
+	}
+
+	loopDev := strings.TrimSpace(string(out))
+	if loopDev == "" {
+		return false, nil // no device found at staging path
+	}
+	return strings.HasPrefix(loopDev, "/dev/loop"), nil
+}
+
+func IsMounted(targetPath string) (bool, error) {
+	cmd := exec.Command("findmnt", "-n", "-o", "TARGET", targetPath)
+	out, err := cmd.Output()
+	if err != nil {
+		// exit status 1 means "not mounted" for findmnt — not a real error
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("findmnt %s: %w", targetPath, err)
+	}
+	mountedPath := strings.TrimSpace(string(out))
+	return mountedPath == targetPath, nil
+}
