@@ -99,7 +99,11 @@ func (cs *ControllerService) CreateVolume(ctx context.Context, req *csi.CreateVo
 
 	// create new CR
 	vol := &hposv1.HPOSVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volID},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: volID,
+			Finalizers: []string{
+				"hposvolume.k8s.io.need-deletion"},
+		},
 		Spec: hposv1.HPOSVolumeSpec{
 			VolID:    volID,
 			NodeName: node,
@@ -209,6 +213,29 @@ func (cs *ControllerService) DeleteVolume(ctx context.Context, req *csi.DeleteVo
 	}
 
 	klog.InfoS("Cleanup job completed successfully", "job", jobName)
+
+	isFinalizerExist, err := util.HasFinalizer(ctx, cs.goClient, req.VolumeId)
+	if err != nil {
+		klog.ErrorS(err, "Failed to check finalizer for HPOSVolume", "volID", req.VolumeId)
+		return nil, status.Error(codes.Internal, "Failure while getting finalizer")
+	}
+
+	if isFinalizerExist {
+		vol := &hposv1.HPOSVolume{}
+		err := cs.goClient.Get(ctx, client.ObjectKey{Name: req.VolumeId}, vol)
+		if err != nil {
+			klog.ErrorS(err, "Failed to delete the finalizer for HPOSVolume", "volID", req.VolumeId)
+			return nil, status.Error(codes.Internal, "failed to delete the finalizer for CR")
+		}
+
+		vol.Finalizers = []string{}
+		err = cs.goClient.Update(ctx, vol)
+		if err != nil {
+			klog.ErrorS(err, "Failed to delete the finalizer for HPOSVolume", "volID", req.VolumeId)
+			return nil, status.Error(codes.Internal, "failed to delete the finalizer for CR")
+		}
+		klog.InfoS("Removed the Finalizer successfully from HPOSVolume", "volID", req.VolumeId)
+	}
 
 	// delete the CR
 	if err := cs.goClient.Delete(ctx, vol); err != nil {

@@ -88,6 +88,16 @@ tasks:
     cmds:
       - kubectl wait --for=condition=Bound  pvc/demo
       - kubectl wait --for=condition=Ready  pod/hposvolume-pod
+  
+  delete-pod-example:
+    desc: "Delete example pod"
+    cmds:
+      - kubectl delete -f manifests/examples/pod.yaml --ignore-not-found
+
+  delete-pvc-example:
+    desc: "Delete example pvc"
+    cmds:
+      - kubectl delete -f manifests/examples/pvc.yaml --ignore-not-found
 
   delete-example:
     desc: "Delete example resources"

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	hposv1 "github.com/shilucloud/csi-driver-hostpath-on-steriod/pkg/apis/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -253,4 +254,21 @@ func IsMounted(targetPath string) (bool, error) {
 	}
 	mountedPath := strings.TrimSpace(string(out))
 	return mountedPath == targetPath, nil
+}
+
+func HasFinalizer(ctx context.Context, k8sClient client.Client, resourceName string) (bool, error) {
+
+	vol := hposv1.HPOSVolume{}
+	err := k8sClient.Get(ctx, client.ObjectKey{Name: resourceName}, &vol)
+
+	if err != nil {
+		return false, err
+	}
+
+	if len(vol.Finalizers) > 0 {
+		return true, nil
+	}
+
+	return false, nil
+
 }
